@@ -23,22 +23,24 @@ export function injectButton(onCopy: () => void): void {
     fontSize: "12px",
     fontWeight: "500",
     cursor: "pointer",
-    border: "none",
+    border: "1px solid rgba(255,255,255,0.35)",
     borderRadius: "4px",
-    background: "#1a73e8",
-    color: "#ffffff",
+    background: "transparent",
+    color: "inherit",
     display: "inline-flex",
     alignItems: "center",
     gap: "6px",
     whiteSpace: "nowrap",
-    transition: "background 0.2s",
+    transition: "background 0.15s, border-color 0.15s",
   });
 
   btn.addEventListener("mouseenter", () => {
-    btn.style.background = "#1557b0";
+    btn.style.background = "rgba(255,255,255,0.08)";
+    btn.style.borderColor = "rgba(255,255,255,0.6)";
   });
   btn.addEventListener("mouseleave", () => {
-    btn.style.background = "#1a73e8";
+    btn.style.background = "transparent";
+    btn.style.borderColor = "rgba(255,255,255,0.35)";
   });
 
   btn.addEventListener("click", (e) => {
