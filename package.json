@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "build": "vite build",
-    "dev": "vite build --watch"
+    "dev": "vite build --watch",
+    "icons": "node scripts/generate-icons.mjs",
+    "build:zip": "npm run icons && npm run build && cd dist && zip -r ../firestore-copy-json.zip . && cd .. && echo '✓ firestore-copy-json.zip ready'"
   },
   "keywords": [],
   "author": "",
