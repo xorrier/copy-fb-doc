@@ -32,7 +32,7 @@ Extract it to a **permanent folder** on your machine (do not delete this folder 
 
 1. Go to [Firebase Console](https://console.firebase.google.com/) → Firestore
 2. Open any document by clicking on a document ID
-3. A blue **"📋 Copy JSON"** button will appear in the breadcrumb bar (top of the page)
+3. A **"📋 Copy JSON"** button will appear on the right side of the breadcrumb bar (next to the document ID)
 4. Click it — the full document JSON is now in your clipboard
 5. Paste anywhere with `Cmd+V`
 
@@ -81,7 +81,7 @@ When a new release is published:
 
 ```bash
 git clone https://github.com/xorrier/copy-fb-doc.git
-cd firestore-copy-json
+cd copy-fb-doc
 npm install
 ```
 
