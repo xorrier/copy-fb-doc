@@ -10,7 +10,7 @@ Supports all Firestore types: strings, numbers, booleans, maps, arrays, timestam
 
 ### Step 1 — Download the extension
 
-Go to the [Releases page](https://github.com/xorrier/firestore-copy-json/releases/latest) and download **`firestore-copy-json.zip`**.
+Go to the [Releases page](https://github.com/xorrier/copy-fb-doc/releases/latest) and download **`firestore-copy-json.zip`**.
 
 ### Step 2 — Extract the zip
 
@@ -44,7 +44,7 @@ The button shows **"✅ Copied!"** briefly to confirm success.
 
 When a new release is published:
 
-1. Download the new `firestore-copy-json.zip` from the [Releases page](https://github.com/xorrier/firestore-copy-json/releases)
+1. Download the new `firestore-copy-json.zip` from the [Releases page](https://github.com/xorrier/copy-fb-doc/releases)
 2. Extract and **replace** the contents of your existing folder (same folder Chrome is pointing to)
 3. Go to `chrome://extensions/` → find the extension → click the **↺ reload** button
 
@@ -80,7 +80,7 @@ When a new release is published:
 ### Setup
 
 ```bash
-git clone https://github.com/xorrier/firestore-copy-json.git
+git clone https://github.com/xorrier/copy-fb-doc.git
 cd firestore-copy-json
 npm install
 ```
