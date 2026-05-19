@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Copy Firestore Doc",
+  "version": "0.1.0",
+  "description": "Copy the currently open Firestore document as JSON to clipboard.",
+  "permissions": ["clipboardWrite"],
+  "content_scripts": [
+    {
+      "matches": ["https://console.firebase.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
