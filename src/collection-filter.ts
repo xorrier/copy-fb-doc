@@ -250,48 +250,44 @@ function getActiveItemTemplate(panel: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Applies the filter: shows a custom overlay list (hides CDK viewport)
- * or restores the original viewport when query is empty.
+ * Applies the filter: shows an absolutely-positioned overlay list on top of
+ * the CDK viewport (never hides it) or removes the overlay when query is empty.
+ *
+ * Keeping CDK alive means it always has a valid internal scroll position, so
+ * selectCollection can drive it reliably via the scrollable element.
  */
 function applyFilter(query: string, panel: HTMLElement, bg: string): void {
-  const viewport = panel.querySelector<HTMLElement>(
-    "cdk-virtual-scroll-viewport",
-  );
-
   if (!query) {
-    // Restore original CDK viewport
-    if (viewport) viewport.style.display = "";
     const existing = document.getElementById(FILTERED_LIST_ID);
     if (existing) existing.remove();
     return;
   }
 
-  // Calculate height before hiding the viewport (otherwise clientHeight is 0)
-  const viewportHeight = viewport ? viewport.clientHeight : 0;
+  // The scrollable wrapper — we need its dimensions for the overlay
+  const scrollable = panel.querySelector<HTMLElement>(".cdk-virtual-scrollable");
+  const scrollableHeight = scrollable ? scrollable.clientHeight : 400;
 
-  // Hide CDK viewport to prevent DOM recycling conflicts
-  if (viewport) viewport.style.display = "none";
+  // Make the scrollable a positioning context for the overlay
+  if (scrollable && getComputedStyle(scrollable).position === "static") {
+    scrollable.style.position = "relative";
+  }
 
   // Re-use or create the overlay list
   let filteredList = document.getElementById(FILTERED_LIST_ID);
   if (!filteredList) {
     filteredList = document.createElement("div");
     filteredList.id = FILTERED_LIST_ID;
-    if (viewport) {
-      filteredList.className = viewport.className;
-    }
     Object.assign(filteredList.style, {
+      position: "absolute",
+      top: "0",
+      left: "0",
+      right: "0",
+      bottom: "0",
       overflowY: "auto",
-      height: viewportHeight ? `${viewportHeight}px` : "100%",
-      maxHeight: "calc(100vh - 200px)",
-      flex: "1 1 auto",
+      zIndex: "5",
+      backgroundColor: bg,
     });
-    viewport?.parentElement?.appendChild(filteredList);
-  } else {
-    // Update height dynamically in case window was resized
-    if (viewportHeight) {
-      filteredList.style.height = `${viewportHeight}px`;
-    }
+    scrollable?.appendChild(filteredList);
   }
 
   filteredList.innerHTML = "";
@@ -328,7 +324,6 @@ function applyFilter(query: string, panel: HTMLElement, bg: string): void {
     }
 
     if (!clone) {
-      // Fallback row if no templates found
       const fallbackRow = document.createElement("div");
       Object.assign(fallbackRow.style, {
         height: "32px",
@@ -339,17 +334,16 @@ function applyFilter(query: string, panel: HTMLElement, bg: string): void {
         cursor: "pointer",
         fontSize: "13px",
         userSelect: "none",
-        transition: "background-color 0.12s",
       });
       fallbackRow.textContent = name;
       fallbackRow.addEventListener("click", () => {
-        selectCollection(name, panel, viewport ?? null);
+        selectCollection(name, panel, false);
       });
       filteredList!.appendChild(fallbackRow);
       return;
     }
 
-    // Reset CDK inline positioning styling
+    // Reset CDK inline transform/positioning
     clone.style.position = "relative";
     clone.style.top = "";
     clone.style.left = "";
@@ -363,8 +357,10 @@ function applyFilter(query: string, panel: HTMLElement, bg: string): void {
 
     clone.addEventListener("click", (event) => {
       const target = event.target as HTMLElement;
-      const isMenuClick = !!target.closest(".menu-button, [data-test-id*='menu'], .mat-icon, button:not(.item-label-button)");
-      selectCollection(name, panel, viewport ?? null, isMenuClick);
+      const isMenuClick = !!target.closest(
+        ".menu-button, [data-test-id*='menu'], .mat-icon, button:not(.item-label-button)",
+      );
+      selectCollection(name, panel, isMenuClick);
     });
 
     filteredList!.appendChild(clone);
@@ -372,57 +368,90 @@ function applyFilter(query: string, panel: HTMLElement, bg: string): void {
 }
 
 /**
- * Selects a collection by:
- * 1. Clearing the filter and restoring the CDK viewport
- * 2. Scrolling CDK to the approximate position of the item
- * 3. Polling until the item appears in the DOM, then clicking it (or its menu)
+ * Selects a collection:
+ * 1. Hides the overlay (revealing the live CDK viewport underneath)
+ * 2. Scrolls the CDK *scrollable* element (not the viewport) to the target
+ *    position — this properly triggers CDK's internal scroll handler
+ * 3. Polls until the row is rendered, then clicks it
+ *
+ * Key insight: CDK listens for scroll events on the element marked
+ * [cdkVirtualScrollingElement] / .cdk-virtual-scrollable, NOT on the
+ * cdk-virtual-scroll-viewport itself. Scrolling the viewport element directly
+ * bypasses CDK's handler and produces the observed flakiness.
  */
 function selectCollection(
   name: string,
   panel: HTMLElement,
-  viewport: HTMLElement | null,
   clickMenu: boolean = false,
 ): void {
-  // Clear input & restore original list
+  // Clear input
   const input = document.getElementById(FILTER_INPUT_ID) as HTMLInputElement;
   if (input) input.value = "";
 
-  if (viewport) viewport.style.display = "";
+  // Remove overlay — CDK viewport was never hidden so it's immediately ready
   const filteredList = document.getElementById(FILTERED_LIST_ID);
   if (filteredList) filteredList.remove();
 
-  // Estimate scroll position: sort seen collections alphabetically (same as Firebase)
+  // The element CDK actually listens to for scroll events
+  const scrollable = panel.querySelector<HTMLElement>(".cdk-virtual-scrollable");
+  if (!scrollable) return;
+
+  const ITEM_HEIGHT = 32;
   const sorted = Array.from(seenCollections).sort();
   const index = sorted.indexOf(name);
-  const ITEM_HEIGHT = 32;
+  const estimatedTop = index !== -1 ? Math.max(0, (index - 2) * ITEM_HEIGHT) : 0;
 
-  if (viewport && index !== -1) {
-    viewport.scrollTop = Math.max(0, (index - 2) * ITEM_HEIGHT);
-  }
+  // Scroll via the scrollable — CDK will re-render the virtual window in response
+  scrollable.scrollTop = estimatedTop;
 
-  // Poll until CDK renders the item, then click it
+  let searchScrollTop = estimatedTop;
   let attempts = 0;
+  const MAX_ATTEMPTS = 80; // ~4 s
+
   const tryClick = setInterval(() => {
     const row = findCollectionRow(name, panel);
     if (row) {
       clearInterval(tryClick);
-      if (clickMenu) {
-        const menuBtn = row.querySelector<HTMLElement>(".menu-button, [data-test-id*='menu'], button:not(.item-label-button)");
-        if (menuBtn) {
-          menuBtn.click();
-        } else {
-          row.querySelector<HTMLElement>(".item-label-button")?.click() || row.click();
-        }
-      } else {
-        row.querySelector<HTMLElement>(".item-label-button")?.click() || row.click();
-      }
-    } else if (++attempts > 20) {
+      setTimeout(() => clickRow(row, clickMenu), 20);
+      return;
+    }
+
+    if (++attempts >= MAX_ATTEMPTS) {
       clearInterval(tryClick);
       console.warn("[Copy Firestore Doc] Could not find collection row for:", name);
-    } else if (viewport) {
-      viewport.scrollTop = Math.max(0, (index - 2) * ITEM_HEIGHT) + attempts;
+      return;
+    }
+
+    // Every 3 ticks (150 ms) advance by one page so CDK renders a new window
+    if (attempts % 3 === 0) {
+      const pageSize = Math.max(scrollable.clientHeight, 200);
+      searchScrollTop += pageSize;
+      if (searchScrollTop > scrollable.scrollHeight) {
+        searchScrollTop = 0;
+      }
+      scrollable.scrollTop = searchScrollTop;
     }
   }, 50);
+}
+
+/** Clicks the label button (or the context-menu button) on a row element. */
+function clickRow(row: HTMLElement, clickMenu: boolean): void {
+  if (clickMenu) {
+    const menuBtn = row.querySelector<HTMLElement>(
+      ".menu-button, [data-test-id*='menu'], .mat-mdc-menu-trigger, button:not(.item-label-button)",
+    );
+    if (menuBtn) {
+      menuBtn.click();
+      return;
+    }
+  }
+  // Default: navigate to the collection
+  const labelBtn = row.querySelector<HTMLElement>(".item-label-button");
+  if (labelBtn) {
+    labelBtn.click();
+  } else {
+    row.click();
+  }
 }
 
 /**
