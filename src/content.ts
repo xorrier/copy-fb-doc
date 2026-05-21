@@ -2,6 +2,7 @@
 import { injectButton } from "./inject-button";
 import { observeDOM } from "./observer";
 import { parseFirestoreDocument } from "./parser";
+import { injectCollectionFilter } from "./collection-filter";
 
 console.log("[Copy Firestore Doc] Extension loaded on Firebase Console.");
 
@@ -52,6 +53,7 @@ function tryInject(): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     injectButton(handleCopy);
+    injectCollectionFilter();
   }, 500);
 }
 
