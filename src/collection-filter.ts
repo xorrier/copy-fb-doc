@@ -286,29 +286,63 @@ function applyFilter(query: string, panel: HTMLElement, bg: string): void {
     return;
   }
 
+  // Grab computed styles from a real list item (if one is in the DOM) so we
+  // can mirror the exact font / color Firebase uses.
+  const sampleBtn = panel.querySelector<HTMLElement>(
+    "f7e-panel-list-item .item-label-button",
+  );
+  const nativeFontSize = sampleBtn
+    ? getComputedStyle(sampleBtn).fontSize
+    : "14px";
+  const nativeFontFamily = sampleBtn
+    ? getComputedStyle(sampleBtn).fontFamily
+    : "inherit";
+  const nativeColor = sampleBtn
+    ? getComputedStyle(sampleBtn).color
+    : "inherit";
+
+  // Measure the real item height from a live row (falls back to 48px).
+  const sampleItem = panel.querySelector<HTMLElement>("f7e-panel-list-item");
+  const nativeItemHeight = sampleItem
+    ? sampleItem.getBoundingClientRect().height || 48
+    : 48;
+
+  // Measure real left padding: distance from panel left edge to text start.
+  const nativePaddingLeft = sampleBtn
+    ? Math.round(
+        sampleBtn.getBoundingClientRect().left -
+          panel.getBoundingClientRect().left,
+      ) + "px"
+    : "32px";
+
   matches.forEach((name) => {
     const row = document.createElement("div");
 
     Object.assign(row.style, {
-      height: "32px",
+      height: nativeItemHeight + "px",
       display: "flex",
       alignItems: "center",
-      padding: "0 16px",
+      // Pad right so text doesn't overlap a potential scrollbar
+      padding: `0 48px 0 ${nativePaddingLeft}`,
       boxSizing: "border-box",
       cursor: "pointer",
-      fontSize: "13px",
+      fontSize: nativeFontSize,
+      fontFamily: nativeFontFamily,
+      color: nativeColor,
       userSelect: "none",
-      borderBottom: "1px solid rgba(128,128,128,0.08)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
     });
 
     row.textContent = name;
 
     row.addEventListener("mouseenter", () => {
-      row.style.background = "rgba(255,255,255,0.06)";
+      row.style.background = "rgba(255,255,255,0.08)";
     });
 
     row.addEventListener("mouseleave", () => {
-      row.style.background = "transparent";
+      row.style.background = "";
     });
 
     row.addEventListener("click", async () => {

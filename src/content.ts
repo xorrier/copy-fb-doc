@@ -40,7 +40,7 @@ function showCopiedFeedback(): void {
   const btn = document.getElementById("copy-firestore-doc-btn");
   if (!btn) return;
   const original = btn.textContent;
-  btn.textContent = "✅ Copied!";
+  btn.textContent = "Copied!";
   setTimeout(() => {
     btn.textContent = original;
   }, 2000);
