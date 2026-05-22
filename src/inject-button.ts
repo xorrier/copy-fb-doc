@@ -15,7 +15,7 @@ export function injectButton(onCopy: () => void): void {
 
   const btn = document.createElement("button");
   btn.id = BUTTON_ID;
-  btn.textContent = "📋 Copy JSON";
+  btn.textContent = "Copy JSON";
   btn.title = "Copy this Firestore document as JSON";
   Object.assign(btn.style, {
     marginLeft: "auto",

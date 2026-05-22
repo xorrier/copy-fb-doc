@@ -1,62 +1,73 @@
 // Injects a live-filter search box above the Firestore collection list panel.
-// Uses a custom overlay list to avoid conflicts with CDK Virtual Scroll DOM recycling.
 
 const FILTER_INPUT_ID = "copy-fbd-collection-filter";
 const FILTER_WRAPPER_ID = "copy-fbd-collection-filter-wrapper";
 const FILTERED_LIST_ID = "copy-fbd-filtered-list";
 
-// Progressive cache of all collection names seen in the DOM
 const seenCollections = new Set<string>();
+
 let cdkObserver: MutationObserver | null = null;
 let currentPanel: HTMLElement | null = null;
 let isScanning = false;
-let lastInjectedUrl = "";
 
-/**
- * Entry point — call this on every DOM mutation.
- */
+let lastDatabaseUrl = "";
+
+function getDatabaseUrl(): string {
+  const match = location.href.match(/^(.*\/databases\/[^/]+)/);
+
+  return match
+    ? match[1]
+    : location.origin + location.pathname.split("/data/")[0];
+}
+
 export function injectCollectionFilter(): void {
   const panel = document.querySelector<HTMLElement>(
     'f7e-collection-list-fields-panel[data-test-id="f7e-collection-list-fields-panel"]',
   );
+
   if (!panel) {
     if (currentPanel) {
       removeCollectionFilter();
     }
+
     return;
   }
 
-  // Clear cache if we switched panel elements or changed database/URL
-  if (currentPanel && (currentPanel !== panel || location.href !== lastInjectedUrl)) {
+  const dbUrl = getDatabaseUrl();
+
+  if (currentPanel && (currentPanel !== panel || dbUrl !== lastDatabaseUrl)) {
     removeCollectionFilter();
   }
 
-  // Always collect newly-rendered items from CDK virtual scroll
   collectVisibleCollections(panel);
 
-  // Only inject UI once
-  if (document.getElementById(FILTER_WRAPPER_ID)) return;
+  if (document.getElementById(FILTER_WRAPPER_ID)) {
+    return;
+  }
 
   const scrollContainer = panel.querySelector<HTMLElement>(
     ".cdk-virtual-scrollable",
   );
+
   if (!scrollContainer) return;
 
   currentPanel = panel;
+  lastDatabaseUrl = dbUrl;
 
-  // Start watching CDK virtual scroll mutations to capture every rendered item
   startCDKObserver(panel);
 
-  // Detect computed background for seamless blending
   const panelBg = window.getComputedStyle(panel).backgroundColor;
+
   const bg =
     panelBg && panelBg !== "rgba(0, 0, 0, 0)" && panelBg !== "transparent"
       ? panelBg
       : "#1f1f1f";
 
-  // --- Wrapper ---
+  // --- Input wrapper (sticky, sits above the scrollable) ---
   const wrapper = document.createElement("div");
+
   wrapper.id = FILTER_WRAPPER_ID;
+
   Object.assign(wrapper.style, {
     padding: "8px 12px",
     boxSizing: "border-box",
@@ -68,13 +79,14 @@ export function injectCollectionFilter(): void {
     borderBottom: "1px solid rgba(128,128,128,0.15)",
   });
 
-  // --- Input ---
   const input = document.createElement("input");
+
   input.id = FILTER_INPUT_ID;
   input.type = "text";
   input.placeholder = "Filter collections…";
   input.autocomplete = "off";
   input.spellcheck = false;
+
   Object.assign(input.style, {
     width: "100%",
     boxSizing: "border-box",
@@ -85,211 +97,173 @@ export function injectCollectionFilter(): void {
     background: "rgba(128,128,128,0.08)",
     color: "inherit",
     outline: "none",
-    transition: "border-color 0.15s, background-color 0.15s, box-shadow 0.15s",
   });
 
-  input.addEventListener("focus", () => {
-    input.style.borderColor = "#1a73e8";
-    input.style.backgroundColor = "rgba(128,128,128,0.04)";
-    input.style.boxShadow = "0 0 0 2px rgba(26,115,232,0.2)";
-  });
-  input.addEventListener("blur", () => {
-    input.style.borderColor = "rgba(128,128,128,0.3)";
-    input.style.backgroundColor = "rgba(128,128,128,0.08)";
-    input.style.boxShadow = "none";
-  });
   input.addEventListener("input", () => {
     if (isScanning) return;
+
     applyFilter(input.value.trim().toLowerCase(), panel, bg);
   });
+
   input.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       input.value = "";
       applyFilter("", panel, bg);
-      input.blur();
     }
   });
 
   wrapper.appendChild(input);
+
   scrollContainer.parentElement!.insertBefore(wrapper, scrollContainer);
+
+  // --- Filtered results overlay — anchored to the panel, NOT inside the scrollable ---
+  // This ensures it doesn't scroll away and always covers the list below the input.
+  ensureFilteredListContainer(panel, scrollContainer, bg);
+
   console.log("[Copy Firestore Doc] Collection filter injected.");
 
-  // Save current URL to detect navigation
-  lastInjectedUrl = location.href;
-
-  // Trigger silent scan to pre-cache all collections
-  setTimeout(() => {
-    scanAndCacheCollections(scrollContainer, input);
-  }, 100);
+  if (seenCollections.size === 0) {
+    setTimeout(() => {
+      scanAndCacheCollections(scrollContainer, input);
+    }, 100);
+  }
 }
 
 /**
- * Silently and quickly scrolls the viewport to the bottom and back to pre-cache all collection names.
+ * Creates (once) the overlay div that shows filtered results.
+ * It is positioned relative to the panel so it sits over the scrollable area
+ * and doesn't scroll away.
  */
+function ensureFilteredListContainer(
+  panel: HTMLElement,
+  scrollContainer: HTMLElement,
+  bg: string,
+): void {
+  if (document.getElementById(FILTERED_LIST_ID)) return;
+
+  // Make the panel a positioning context if it isn't already.
+  const panelPos = getComputedStyle(panel).position;
+  if (panelPos === "static") {
+    panel.style.position = "relative";
+  }
+
+  const filteredList = document.createElement("div");
+
+  filteredList.id = FILTERED_LIST_ID;
+
+  // Calculate top offset so it sits right below the wrapper + scrollContainer top.
+  // We use offsetTop of scrollContainer as the reference.
+  Object.assign(filteredList.style, {
+    display: "none", // hidden until a search is active
+    position: "absolute",
+    left: "0",
+    right: "0",
+    // Will be updated dynamically in applyFilter once wrapper height is known.
+    top: "0",
+    bottom: "0",
+    overflowY: "auto",
+    zIndex: "9",
+    backgroundColor: bg,
+  });
+
+  panel.appendChild(filteredList);
+}
+
 async function scanAndCacheCollections(
   viewport: HTMLElement,
   input: HTMLInputElement,
 ): Promise<void> {
   if (isScanning) return;
+
   isScanning = true;
 
   const originalPlaceholder = input.placeholder;
   input.placeholder = "Scanning collections...";
 
   const originalScrollTop = viewport.scrollTop;
-  const originalScrollBehavior = viewport.style.scrollBehavior;
-  const originalVisibility = viewport.style.visibility;
-
-  viewport.style.scrollBehavior = "auto";
-  viewport.style.visibility = "hidden";
 
   try {
     const step = Math.max(200, viewport.clientHeight - 50);
+
     let currentScroll = 0;
 
-    // Run first collection pass
     collectVisibleCollections(currentPanel!);
 
-    if (viewport.scrollHeight > viewport.clientHeight) {
-      while (currentScroll < viewport.scrollHeight) {
-        if (!currentPanel || !viewport.isConnected) break;
-        viewport.scrollTop = currentScroll;
-        // Small delay to allow CDK virtual scroll to render new items
-        await new Promise((resolve) => setTimeout(resolve, 15));
-        currentScroll += step;
-      }
+    while (currentScroll < viewport.scrollHeight) {
+      viewport.scrollTop = currentScroll;
+
+      await new Promise((resolve) => setTimeout(resolve, 15));
+
+      collectVisibleCollections(currentPanel!);
+
+      currentScroll += step;
     }
   } catch (err) {
-    console.error("[Copy Firestore Doc] Error scanning collections:", err);
+    console.error(err);
   } finally {
-    // Restore original state
     viewport.scrollTop = originalScrollTop;
-    viewport.style.scrollBehavior = originalScrollBehavior;
-    viewport.style.visibility = originalVisibility;
+
     input.placeholder = originalPlaceholder;
+
     isScanning = false;
+
+    console.log(
+      `[Copy Firestore Doc] Cached ${seenCollections.size} collections.`,
+    );
   }
 }
 
-/**
- * Scrapes labels from currently-rendered f7e-panel-list-item elements into the cache.
- */
 function collectVisibleCollections(panel: HTMLElement): void {
   panel
     .querySelectorAll<HTMLElement>("f7e-panel-list-item .item-label-button")
     .forEach((btn) => {
       const name = btn.textContent?.trim();
-      if (name) seenCollections.add(name);
+
+      if (name) {
+        seenCollections.add(name);
+      }
     });
 }
 
-/**
- * Watches the CDK virtual scroll content wrapper for new items being rendered.
- * Each time CDK recycles/adds items, we harvest their labels into the cache.
- */
 function startCDKObserver(panel: HTMLElement): void {
-  if (cdkObserver) return; // already watching
+  if (cdkObserver) return;
 
   const contentWrapper = panel.querySelector<HTMLElement>(
     ".cdk-virtual-scroll-content-wrapper",
   );
+
   if (!contentWrapper) return;
 
   cdkObserver = new MutationObserver(() => {
     collectVisibleCollections(panel);
   });
 
-  cdkObserver.observe(contentWrapper, { childList: true, subtree: false });
+  cdkObserver.observe(contentWrapper, {
+    childList: true,
+    subtree: false,
+  });
 }
 
-/**
- * Gets the name of the currently active/selected collection from the URL.
- */
-function getActiveCollectionName(): string | null {
-  const parts = location.href.split("/data/");
-  if (parts.length > 1) {
-    const subParts = parts[1].split("/");
-    if (subParts.length > 0) {
-      return decodeURIComponent(subParts[0]);
-    }
-  }
-  return null;
-}
-
-/**
- * Searches the DOM for a non-selected f7e-panel-list-item to act as a normal row template.
- */
-function getTemplateItem(panel: HTMLElement): HTMLElement | null {
-  const activeName = getActiveCollectionName();
-  const items = panel.querySelectorAll<HTMLElement>("f7e-panel-list-item");
-  for (const item of items) {
-    const btn = item.querySelector(".item-label-button");
-    const name = btn?.textContent?.trim();
-    if (name && name !== activeName) {
-      return item;
-    }
-  }
-  return items[0] || null;
-}
-
-/**
- * Searches the DOM for the active f7e-panel-list-item to act as the selected row template.
- */
-function getActiveItemTemplate(panel: HTMLElement): HTMLElement | null {
-  const activeName = getActiveCollectionName();
-  if (!activeName) return null;
-  const items = panel.querySelectorAll<HTMLElement>("f7e-panel-list-item");
-  for (const item of items) {
-    const btn = item.querySelector(".item-label-button");
-    const name = btn?.textContent?.trim();
-    if (name === activeName) {
-      return item;
-    }
-  }
-  return null;
-}
-
-/**
- * Applies the filter: shows an absolutely-positioned overlay list on top of
- * the CDK viewport (never hides it) or removes the overlay when query is empty.
- *
- * Keeping CDK alive means it always has a valid internal scroll position, so
- * selectCollection can drive it reliably via the scrollable element.
- */
 function applyFilter(query: string, panel: HTMLElement, bg: string): void {
+  const filteredList = document.getElementById(FILTERED_LIST_ID) as HTMLElement | null;
+
+  if (!filteredList) return;
+
   if (!query) {
-    const existing = document.getElementById(FILTERED_LIST_ID);
-    if (existing) existing.remove();
+    // Hide overlay — restore normal view
+    filteredList.style.display = "none";
+    filteredList.innerHTML = "";
     return;
   }
 
-  // The scrollable wrapper — we need its dimensions for the overlay
-  const scrollable = panel.querySelector<HTMLElement>(".cdk-virtual-scrollable");
-  const scrollableHeight = scrollable ? scrollable.clientHeight : 400;
-
-  // Make the scrollable a positioning context for the overlay
-  if (scrollable && getComputedStyle(scrollable).position === "static") {
-    scrollable.style.position = "relative";
+  // Position the overlay to start right below the filter wrapper
+  const wrapper = document.getElementById(FILTER_WRAPPER_ID);
+  if (wrapper) {
+    const wrapperBottom = wrapper.offsetTop + wrapper.offsetHeight;
+    filteredList.style.top = `${wrapperBottom}px`;
   }
 
-  // Re-use or create the overlay list
-  let filteredList = document.getElementById(FILTERED_LIST_ID);
-  if (!filteredList) {
-    filteredList = document.createElement("div");
-    filteredList.id = FILTERED_LIST_ID;
-    Object.assign(filteredList.style, {
-      position: "absolute",
-      top: "0",
-      left: "0",
-      right: "0",
-      bottom: "0",
-      overflowY: "auto",
-      zIndex: "5",
-      backgroundColor: bg,
-    });
-    scrollable?.appendChild(filteredList);
-  }
-
+  filteredList.style.display = "block";
   filteredList.innerHTML = "";
 
   const matches = Array.from(seenCollections)
@@ -298,187 +272,157 @@ function applyFilter(query: string, panel: HTMLElement, bg: string): void {
 
   if (matches.length === 0) {
     const empty = document.createElement("div");
+
     Object.assign(empty.style, {
-      padding: "16px 14px",
+      padding: "16px",
       fontSize: "13px",
       color: "rgba(128,128,128,0.5)",
-      userSelect: "none",
     });
+
     empty.textContent = `No collections matching "${query}"`;
+
     filteredList.appendChild(empty);
+
     return;
   }
 
-  const normalTemplate = getTemplateItem(panel);
-  const activeTemplate = getActiveItemTemplate(panel);
-  const activeName = getActiveCollectionName();
-
   matches.forEach((name) => {
-    const isActive = (name === activeName);
-    let clone: HTMLElement | null = null;
+    const row = document.createElement("div");
 
-    if (isActive && activeTemplate) {
-      clone = activeTemplate.cloneNode(true) as HTMLElement;
-    } else if (normalTemplate) {
-      clone = normalTemplate.cloneNode(true) as HTMLElement;
-    }
-
-    if (!clone) {
-      const fallbackRow = document.createElement("div");
-      Object.assign(fallbackRow.style, {
-        height: "32px",
-        display: "flex",
-        alignItems: "center",
-        padding: "0 16px",
-        boxSizing: "border-box",
-        cursor: "pointer",
-        fontSize: "13px",
-        userSelect: "none",
-      });
-      fallbackRow.textContent = name;
-      fallbackRow.addEventListener("click", () => {
-        selectCollection(name, panel, false);
-      });
-      filteredList!.appendChild(fallbackRow);
-      return;
-    }
-
-    // Reset CDK inline transform/positioning
-    clone.style.position = "relative";
-    clone.style.top = "";
-    clone.style.left = "";
-    clone.style.transform = "";
-    clone.removeAttribute("id");
-
-    const labelBtn = clone.querySelector(".item-label-button");
-    if (labelBtn) {
-      labelBtn.textContent = name;
-    }
-
-    clone.addEventListener("click", (event) => {
-      const target = event.target as HTMLElement;
-      const isMenuClick = !!target.closest(
-        ".menu-button, [data-test-id*='menu'], .mat-icon, button:not(.item-label-button)",
-      );
-      selectCollection(name, panel, isMenuClick);
+    Object.assign(row.style, {
+      height: "32px",
+      display: "flex",
+      alignItems: "center",
+      padding: "0 16px",
+      boxSizing: "border-box",
+      cursor: "pointer",
+      fontSize: "13px",
+      userSelect: "none",
+      borderBottom: "1px solid rgba(128,128,128,0.08)",
     });
 
-    filteredList!.appendChild(clone);
+    row.textContent = name;
+
+    row.addEventListener("mouseenter", () => {
+      row.style.background = "rgba(255,255,255,0.06)";
+    });
+
+    row.addEventListener("mouseleave", () => {
+      row.style.background = "transparent";
+    });
+
+    row.addEventListener("click", async () => {
+      await selectCollection(name, panel);
+    });
+
+    filteredList!.appendChild(row);
   });
 }
 
-/**
- * Selects a collection:
- * 1. Hides the overlay (revealing the live CDK viewport underneath)
- * 2. Scrolls the CDK *scrollable* element (not the viewport) to the target
- *    position — this properly triggers CDK's internal scroll handler
- * 3. Polls until the row is rendered, then clicks it
- *
- * Key insight: CDK listens for scroll events on the element marked
- * [cdkVirtualScrollingElement] / .cdk-virtual-scrollable, NOT on the
- * cdk-virtual-scroll-viewport itself. Scrolling the viewport element directly
- * bypasses CDK's handler and produces the observed flakiness.
- */
-function selectCollection(
+async function selectCollection(
   name: string,
   panel: HTMLElement,
-  clickMenu: boolean = false,
-): void {
-  // Clear input
+): Promise<void> {
+  // 1. Clear the filter input and hide the overlay
   const input = document.getElementById(FILTER_INPUT_ID) as HTMLInputElement;
-  if (input) input.value = "";
 
-  // Remove overlay — CDK viewport was never hidden so it's immediately ready
-  const filteredList = document.getElementById(FILTERED_LIST_ID);
-  if (filteredList) filteredList.remove();
+  if (input) {
+    input.value = "";
+  }
 
-  // The element CDK actually listens to for scroll events
+  const filteredList = document.getElementById(FILTERED_LIST_ID) as HTMLElement | null;
+  if (filteredList) {
+    filteredList.style.display = "none";
+    filteredList.innerHTML = "";
+  }
+
+  // 2. First, try clicking a row that's already in the visible DOM
+  //    (fast path — works if the collection is currently rendered by the virtual scroller)
+  if (clickVisibleCollection(name, panel)) return;
+
+  // 3. Slow path — scroll the virtual list until the row appears, then click it.
   const scrollable = panel.querySelector<HTMLElement>(".cdk-virtual-scrollable");
+
   if (!scrollable) return;
 
-  const ITEM_HEIGHT = 32;
-  const sorted = Array.from(seenCollections).sort();
-  const index = sorted.indexOf(name);
-  const estimatedTop = index !== -1 ? Math.max(0, (index - 2) * ITEM_HEIGHT) : 0;
-
-  // Scroll via the scrollable — CDK will re-render the virtual window in response
-  scrollable.scrollTop = estimatedTop;
-
-  let searchScrollTop = estimatedTop;
-  let attempts = 0;
-  const MAX_ATTEMPTS = 80; // ~4 s
-
-  const tryClick = setInterval(() => {
-    const row = findCollectionRow(name, panel);
-    if (row) {
-      clearInterval(tryClick);
-      setTimeout(() => clickRow(row, clickMenu), 20);
-      return;
-    }
-
-    if (++attempts >= MAX_ATTEMPTS) {
-      clearInterval(tryClick);
-      console.warn("[Copy Firestore Doc] Could not find collection row for:", name);
-      return;
-    }
-
-    // Every 3 ticks (150 ms) advance by one page so CDK renders a new window
-    if (attempts % 3 === 0) {
-      const pageSize = Math.max(scrollable.clientHeight, 200);
-      searchScrollTop += pageSize;
-      if (searchScrollTop > scrollable.scrollHeight) {
-        searchScrollTop = 0;
-      }
-      scrollable.scrollTop = searchScrollTop;
-    }
-  }, 50);
+  await scrollUntilVisible(name, panel, scrollable);
 }
 
-/** Clicks the label button (or the context-menu button) on a row element. */
-function clickRow(row: HTMLElement, clickMenu: boolean): void {
-  if (clickMenu) {
-    const menuBtn = row.querySelector<HTMLElement>(
-      ".menu-button, [data-test-id*='menu'], .mat-mdc-menu-trigger, button:not(.item-label-button)",
-    );
-    if (menuBtn) {
-      menuBtn.click();
-      return;
+/** Clicks the collection row if it is currently in the DOM. Returns true on success. */
+function clickVisibleCollection(name: string, panel: HTMLElement): boolean {
+  const items = panel.querySelectorAll<HTMLElement>("f7e-panel-list-item");
+
+  for (const item of items) {
+    const btn = item.querySelector<HTMLElement>(".item-label-button");
+
+    if (btn?.textContent?.trim() === name) {
+      btn.click();
+      return true;
     }
   }
-  // Default: navigate to the collection
-  const labelBtn = row.querySelector<HTMLElement>(".item-label-button");
-  if (labelBtn) {
-    labelBtn.click();
-  } else {
-    row.click();
-  }
+
+  return false;
 }
 
 /**
- * Finds the f7e-panel-list-item for a given collection name in the current DOM.
+ * Scrolls through the virtual list in steps, checking after each step whether
+ * the target collection row has been rendered. When found, clicks it.
  */
-function findCollectionRow(
+async function scrollUntilVisible(
   name: string,
   panel: HTMLElement,
-): HTMLElement | null {
-  const items = panel.querySelectorAll<HTMLElement>("f7e-panel-list-item");
-  for (const item of items) {
-    const btn = item.querySelector(".item-label-button");
-    if (btn?.textContent?.trim() === name) return item;
+  scrollable: HTMLElement,
+): Promise<void> {
+  // Estimate scroll position using sorted index (best-effort).
+  const sorted = Array.from(seenCollections).sort();
+  const index = sorted.indexOf(name);
+
+  const ITEM_HEIGHT = 32;
+
+  if (index !== -1) {
+    // Jump close to the expected position first.
+    scrollable.scrollTop = Math.max(0, index * ITEM_HEIGHT - scrollable.clientHeight / 2);
+    await new Promise((r) => setTimeout(r, 80));
+
+    if (clickVisibleCollection(name, panel)) return;
   }
-  return null;
+
+  // Full sweep: scan from top to bottom until found.
+  const step = Math.max(150, scrollable.clientHeight - 50);
+  let pos = 0;
+
+  while (pos <= scrollable.scrollHeight) {
+    scrollable.scrollTop = pos;
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    if (clickVisibleCollection(name, panel)) return;
+
+    pos += step;
+  }
+
+  // Last attempt after reaching the bottom.
+  clickVisibleCollection(name, panel);
 }
 
-/**
- * Removes all injected UI and stops the CDK observer.
- */
 export function removeCollectionFilter(): void {
   document.getElementById(FILTER_WRAPPER_ID)?.remove();
-  document.getElementById(FILTERED_LIST_ID)?.remove();
+
+  const filteredList = document.getElementById(FILTERED_LIST_ID);
+  if (filteredList) {
+    filteredList.style.display = "none";
+    filteredList.remove();
+  }
+
   cdkObserver?.disconnect();
+
   cdkObserver = null;
+
   currentPanel = null;
+
   seenCollections.clear();
+
   isScanning = false;
-  lastInjectedUrl = "";
+
+  lastDatabaseUrl = "";
 }
